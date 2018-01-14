@@ -1,0 +1,226 @@
+---
+title: "Machine Learning to Monitor Exercise Quality"
+output: 
+  html_document:
+    keep_md: true
+---
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(cache=TRUE)
+```
+
+Kristin Abkemeier, January 2018
+===============================
+
+## Synopsis
+
+This assignment entails analyzing data from accelerometers placed on the belt, forearm, upper arm, and dumbbell of 6 people who performed dumbbell lifts correctly and then incorrectly in five different specific ways. The dumbbell lift motions were categorized into classes A, B, C, D, or E based on how the subject performed the exercise. I sought to find a machine learning algorithm that could be trained on the properly cleaned data so that the algorithm could correctly identify how the dumbbell lift was done according to class (called "classe" in this data set). After paring down the given data set to 53 usable columns and exploring several different machine learning approaches, I found that I could achieve accuracy of over 99 percent from using a support vector machine model that was tuned with the correct model type and parameters. 
+
+## Exploring and Cleaning the Data
+
+For this report, I read in the data contained in the file pml-training.csv that was collected in the research by Velloso, E.; Bulling, A.; Gellersen, H.; Ugulino, W.; and Fuks, H., "Qualitative Activity Recognition of Weight Lifting Exercises, 2013 [1]. 
+
+I want to note that I am trying to write as original a report as possible to do while fulfilling the requirements of the assignment. I used the R language (https://www.r-project.org/) and RStudio (https://www.rstudio.com/) to do the computations for this assignment. To solve the problem, I used the functions included in the base packages that come included with R and the e1071 package, called Misc Functions of the Department of Statistics, Probability Theory Group (Formerly E1071)[2]. It feels strange to use such a powerful canned function as svm() to do an assignment, but I doubt that I am expected to write my own machine learning algorithm for this course, so I use the tools that others have created before me, and I am giving the creators credit.
+
+I began my analysis by reading the pml-training.csv data set into RStudio and then loading in the e1071 package.
+```{r, echo=TRUE, quietly=TRUE, warning = FALSE, message=FALSE}
+## Loading and preprocessing the data
+setwd("/Users/kristinabkemeier/DataScience/Practical Machine Learning/Project")
+actData <- read.csv("pml-training.csv", header=TRUE)
+## And read in the library that I will need to use, from the e1071 package by Meyer, D.; Dimitriadou, E.; Hornik, K.; Weingessel, A.; Leisch, F.; Chang, C.-C.; Lin, C.-C. [e1071: Misc Functions of the Department of Statistics, Probability Theory Group (Formerly E1071), TU Wien](https://CRAN.R-project.org/package=e1071) Version 1.6-8, published 2017-02-02 at https://CRAN.R-project.org/package=e1071 
+library(e1071)
+```
+
+Because the table started with 160 columns of data, I did an initial visual inspection of the table in Excel to see if I could identify any patterns that would allow me to get rid of the columns that would not contribute towards a good fit of the data. Some columns were sparsely populated, with only occasional nonzero entries that contained quantities that contained values calculated from multiple rows. However, a look at the testing data set provided, pml-testing.csv, indicated that we would only need to classify entries according to the values in individual rows, with no cross-correlations indicated. So, it was clear that the sparsely populated columns were likely unnecessary.
+
+I identified all of the columns that had NAs in them. It turned out that all of the columns with NA values in the first row were almost entirely filled with NA values. I checked the percentage of values in the column that were "NA".
+```{r, echo=TRUE}
+hasNA <- which(is.na(actData[1,]))
+length(hasNA)
+hasNA
+
+for (i in rev(hasNA))
+{
+  percentIsNA <- sum(is.na(actData[,i]))/length(actData[,i]) * 100
+  print(i)
+  print(percentIsNA)
+}
+```
+
+Likewise, many columns were filled with mostly blanks, so I also screened for those and calculated the percentages of empty values.
+```{r, echo=TRUE}
+isEmpty <- which((actData[1,]==""))
+length(isEmpty)
+isEmpty
+
+for (i in rev(isEmpty))
+{
+  percentIsEmpty <- sum(actData[,i]=="")/length(actData[,i]) * 100
+  print(i)
+  print(percentIsEmpty)
+}
+```
+
+Because imputation is only viable if there are values in a majority of rows (more than 50 percent), it made more sense to eliminate these rows comprising mostly NAs and empty values. Also, the first seven columns contained values that couldn't be used to include in a model, such as row index numbers, subject names, timestamps, and some additional non-quantitative criteria. Thus, I removed those columns as well.
+```{r, echo=TRUE}
+colsToRemove <- c(1:7, hasNA, isEmpty)
+actDataSmaller <- actData[,-colsToRemove]
+```
+
+I needed to partition the training data set so that we could test our model before we tried testing it on the 20 testing values given in the file pml-testing.csv. I chose to put 75% of the pml-training.csv data into my training set and 25% into my testing set for checking my out of sample error rate. Because I am not using the Caret package in this project, I had to find a different way in which to partition the data instead of via the train() function. Instead, I just sent every fourth value to a validation data set. I planned to check the accuracy of my most successful model against the validation data set, called validationData here, before running the model on the actual testing data given with the assignment.
+```{r, echo=TRUE}
+numRows <- dim(actData)[1]
+numRowsDividedBy4 <- numRows/4
+indicesPart <- seq(numRowsDividedBy4)*4
+
+validationData <- actDataSmaller[indicesPart,]
+trainingData <- actDataSmaller[-indicesPart,]
+```
+
+## Machine Learning Attempts
+
+If I knew how, I would write my own machine learning tool, but building unique and individual machine learning tools is not the aim of this course. So, I had to use the machine learning tools that I learned about in this course. Initially, I tried several different machine learning models in the Caret package. However several of these models ("bagEarth"", "bagFDA", random forest "rf" and generalized boosted regression model "gbm") did not converge after an hour. I am not including these results here, but suffice it to say that I found using the Caret package for this assignment to be problematic. Most of the functions I tried did not converge.
+
+Instead, I decided to explore support vector machines in the e1071 package. A support vector machine (SVM) works by assigns new examples to categories. According to the Wikipedia article on SVMs,
+
+>An SVM model is a representation of the examples as points in space, mapped so that the examples of the separate categories are divided by a clear gap that is as wide as possible. New examples are then mapped into that same space and predicted to belong to a category based on which side of the gap they fall.[3]
+
+I needed to create the set of regressors for my training data set (trainingData) and validation data set (validationData).
+```{r, echo=TRUE}
+regressorsTrain <- subset(trainingData, select = -classe)
+regressorsValidation <- subset(validationData, select = -classe)
+```
+
+According to the Wikipedia article, SVMs can efficiently perform a non-linear classification using what is called the kernel trick, implicitly mapping their inputs into high-dimensional feature spaces. The default kernel in svm() is linear, but I also tried the polynomial kernel, because I knew from exploratory plotting that the data from the six subjects was very complex.
+
+First, I did the training of the SVM model by calling SVM on my regressors, using a linear kernel, and setting a k-fold cross-validation with k = 5 on the training data by setting the input parameter cross to the value of 5.
+```{r, echo=TRUE}
+## Set seed for reproducibility
+set.seed(1342)
+
+## Support vector matrix function is from the e1071 package by Meyer, D.; Dimitriadou, E.; Hornik, K.; Weingessel, A.; Leisch, F.; Chang, C.-C.; Lin, C.-C. [e1071: Misc Functions of the Department of Statistics, Probability Theory Group (Formerly E1071), TU Wien](https://CRAN.R-project.org/package=e1071) Version 1.6-8, published 2017-02-02 at https://CRAN.R-project.org/package=e1071 
+## I just want to warn people that this is a course about practical machine learning, so we are not expected to write machine learning tools from scratch. Therefore, I am citing here that I am using the svm() function which the team of D. Meyer and others created as part of the e1071 package for R. I am making sure to give them all of the credit that they so richly deserve here for developing this powerful tool.
+
+trainModel1 <- svm(regressorsTrain, trainingData$classe, kernel="linear", cross=5)
+summary(trainModel1)
+```
+
+Then, I did the predictions on the training set, using the predict() function from the R stats package included in the basic installation of R [4]. I looked at what is called the confusion matrix, which compares the predicted values in the trainingData$classe column with the actual values in the column. You can get the accuracy of the prediction by summing up the percentages in the diagonal entries of the matrix. I will call the matrix conf so that my sum over the diagonal takes up less space on the page.
+```{r, echo=TRUE}
+## The predict() function is included in the stats package included in the basic installation of R.
+prediction1 <- predict(trainModel1, regressorsTrain)
+conf <- table(prediction1, trainingData$classe)
+accuracy1 <- (conf[1,1] + conf[2,2] + conf[3,3] + conf[4,4] + conf[5,5])/sum(conf[,])
+accuracy1
+```
+
+We see that the initial accuracy value for the SVM with a linear kernel is not very high. This did not seem surprising, given the complexity of the data, with the different motion patterns displayed by the six subjects for the five different ways of doing the exercise. So, I switched to a polynomial kernel, keeping the 5-fold cross-validation, and setting a couple of additional parameters that the function svm() allows when the kernel is type polynomial: degree = 3, so that a third-degree polynomial could be used (actually, this is the default value); and coef0 is the value in the polynomial kernel expression (gamma*u'*v + coef0)^degree given in the R help file for svm(). Setting coef0 to a nonzero value can apparently increase the boundaries between categories of points, so it is worth exploring the effect of changing it. I tried the values coef0 = 1, 2, 3, and then skipped to 20 because I saw a trend.
+```{r, echo=TRUE}
+trainModel2 <- svm(regressorsTrain, trainingData$classe, kernel="polynomial", cross=5, degree=3, coef0=1)
+summary(trainModel2)
+
+trainModel3 <- svm(regressorsTrain, trainingData$classe, kernel="polynomial", cross=5, degree=3, coef0=2)
+summary(trainModel3)
+
+trainModel4 <- svm(regressorsTrain, trainingData$classe, kernel="polynomial", cross=5, degree=3, coef0=3)
+summary(trainModel4)
+
+trainModel5 <- svm(regressorsTrain, trainingData$classe, kernel="polynomial", cross=5, degree=3, coef0=20)
+summary(trainModel5)
+```
+
+The accuracy increases as coef0 increases. Then I checked what would happen if I increased the cross-validation from cross=5 to cross=10: 
+```{r, echo=TRUE}
+trainModel6 <- svm(regressorsTrain, trainingData$classe, kernel="polynomial", cross=10, degree=3, coef0=20)
+summary(trainModel6)
+```
+
+Changing the cross-validation number did not have an effect, but then changing the value of the parameter gamma from its default value of 1 to setting a value of 10 increased the accuracy further:
+```{r, echo=TRUE}
+trainModel7 <- svm(regressorsTrain, trainingData$classe, kernel="polynomial", cross=10, degree=3, coef0=20, gamma=10)
+summary(trainModel7)
+```
+
+Finally, I noticed from ?svm that there was another parameter, cost, that is called the cost of constrains violation. It has a default value of 1, but I wanted to see what effect increasing the value of cost to 10 and then 100 might have:
+```{r, echo=TRUE}
+trainModel8 <- svm(regressorsTrain, trainingData$classe, kernel="polynomial", cross=10, degree=3, coef0=20, gamma=10, cost=10)
+summary(trainModel8)
+
+trainModel9 <- svm(regressorsTrain, trainingData$classe, kernel="polynomial", cross=10, degree=3, coef0=20, gamma=10, cost=100)
+summary(trainModel9)
+```
+
+We have gotten the accuracy to above 99 percent on the training in trainModel9, so let's compare how all of these models do for predicting the validation data set, validationData, before we try it on the actual test data set. I used the predict() function from the R stats package [4][stats] included in the basic installation of R. I looked at what is called the confusion matrix, which compares the predicted values in the trainingData$classe column with the actual values in the column. You can get the accuracy of the prediction by summing up the percentages in the diagonal entries of the matrix. I will call the matrix conf so that my sum over the diagonal takes up less space on the page.
+```{r, echo=TRUE}
+## predict() is a function in the stats package that comes with the base installation of R.[4][stats]
+prediction1 <- predict(trainModel1, regressorsValidation)
+prediction2 <- predict(trainModel2, regressorsValidation)
+prediction3 <- predict(trainModel3, regressorsValidation)
+prediction4 <- predict(trainModel4, regressorsValidation)
+prediction5 <- predict(trainModel5, regressorsValidation)
+prediction6 <- predict(trainModel6, regressorsValidation)
+prediction7 <- predict(trainModel7, regressorsValidation)
+prediction8 <- predict(trainModel8, regressorsValidation)
+prediction9 <- predict(trainModel9, regressorsValidation)
+
+conf <- table(prediction1, validationData$classe)
+accuracy1 <- (conf[1,1] + conf[2,2] + conf[3,3] + conf[4,4] + conf[5,5])/sum(conf[,])
+accuracy1
+
+conf <- table(prediction2, validationData$classe)
+accuracy2 <- (conf[1,1] + conf[2,2] + conf[3,3] + conf[4,4] + conf[5,5])/sum(conf[,])
+accuracy2
+
+conf <- table(prediction3, validationData$classe)
+accuracy3 <- (conf[1,1] + conf[2,2] + conf[3,3] + conf[4,4] + conf[5,5])/sum(conf[,])
+accuracy3
+
+conf <- table(prediction4, validationData$classe)
+accuracy4 <- (conf[1,1] + conf[2,2] + conf[3,3] + conf[4,4] + conf[5,5])/sum(conf[,])
+accuracy4
+
+conf <- table(prediction5, validationData$classe)
+accuracy5 <- (conf[1,1] + conf[2,2] + conf[3,3] + conf[4,4] + conf[5,5])/sum(conf[,])
+accuracy5
+
+conf <- table(prediction6, validationData$classe)
+accuracy6 <- (conf[1,1] + conf[2,2] + conf[3,3] + conf[4,4] + conf[5,5])/sum(conf[,])
+accuracy6
+
+conf <- table(prediction7, validationData$classe)
+accuracy7 <- (conf[1,1] + conf[2,2] + conf[3,3] + conf[4,4] + conf[5,5])/sum(conf[,])
+accuracy7
+
+conf <- table(prediction8, validationData$classe)
+accuracy8 <- (conf[1,1] + conf[2,2] + conf[3,3] + conf[4,4] + conf[5,5])/sum(conf[,])
+accuracy8
+
+conf <- table(prediction9, validationData$classe)
+accuracy9 <- (conf[1,1] + conf[2,2] + conf[3,3] + conf[4,4] + conf[5,5])/sum(conf[,])
+accuracy9
+```
+
+The accuracies for the validation data sets increase as we change the various parameters, and the last three values are the same, which indicates that varying the cost parameter made no difference. Thus, trainModel7, with svm(regressorsTrain, trainingData$classe, kernel="polynomial", cross=10, degree=3, coef0=20, gamma=10), appears to be the best model we can achieve with an SVM without getting tremendously detailed. A 99% accuracy is good enough for getting the answers to the test data, which we read in and process in an identical fashion to how we handled the validation data set.
+
+```{r, echo=TRUE}
+actData <- read.csv("pml-testing.csv", header=TRUE)
+actDataSmaller <- actData[,-colsToRemove]
+regressorsTest <- subset(actDataSmaller, select = -problem_id)
+predictionTest <- predict(trainModel7, regressorsTest)
+predictionTest
+```
+
+I entered these values into the quiz and got 20 out of 20 correct. So, the support vector machine model worked.
+
+## Conclusion
+
+The support vector machine model svm() in the e1071 package of R can be used to identify the manner in which an exercise is performed with over 99 percent accuracy if it is properly modified with the parameters of degree, coef0, and gamma. The cost parameter turned out to be irrelevant in this case.
+
+## References
+
+[1]. Velloso, E.; Bulling, A.; Gellersen, H.; Ugulino, W.; and Fuks, H., "Qualitative Activity Recognition of Weight Lifting Exercises, 2013. [Link retrieved on 2018-01-11. ](http://web.archive.org/web/20170519033209/http://groupware.les.inf.puc-rio.br:80/public/papers/2013.Velloso.QAR-WLE.pdf)
+
+[2]. Meyer, D.; Dimitriadou, E.; Hornik, K.; Weingessel, A.; Leisch, F.; Chang, C.-C.; Lin, C.-C. [e1071: Misc Functions of the Department of Statistics, Probability Theory Group (Formerly E1071), TU Wien](https://CRAN.R-project.org/package=e1071) Version 1.6-8, published 2017-02-02 at https://CRAN.R-project.org/package=e1071.
+
+[3]. https://en.wikipedia.org/wiki/Support_vector_machine, retrieved 2018-01-13.
+
+[4]. The stats package is one of the add-on packages that comes with the base R distribution. Link: [https://cran.r-project.org/doc/FAQ/R-FAQ.html#Add_002don-packages-in-R](https://cran.r-project.org/doc/FAQ/R-FAQ.html#Add_002don-packages-in-R). 
